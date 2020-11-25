@@ -1,5 +1,4 @@
 local discordia = require("discordia")
-local utils = require("miscUtils")
 local timer = require("timer")
 
 local rm = {}
@@ -23,6 +22,41 @@ rm.reactions = {
 rm.validReactions = {["🛑"]=true, ["⬅"]=true, ["1️⃣"]=true, ["2️⃣"]=true, ["3️⃣"]=true, ["4️⃣"]=true, ["5️⃣"]=true, ["6️⃣"]=true, ["7️⃣"]=true, ["8️⃣"]=true, ["9️⃣"]=true}
 
 rm.choiceReactions = {["1️⃣"]=1, ["2️⃣"]=2, ["3️⃣"]=3, ["4️⃣"]=4, ["5️⃣"]=5, ["6️⃣"]=6, ["7️⃣"]=7, ["8️⃣"]=8, ["9️⃣"]=9}
+
+-- Like Emitter:waitFor, but waits for either of two events
+-- If there is a timeout and it's reached, returns false; otherwise returns the name of the event that was emitted
+local waitForAny = function(emitter, nameA, nameB, timeout, predicateA, predicateB)
+	local thread = coroutine.running()
+	local fnA, fnB
+
+	fnA = emitter:onSync(nameA, function(...)
+		if predicateA and not predicateA(...) then return end
+		if timeout then
+			timer.clearTimeout(timeout)
+		end
+		emitter:removeListener(nameA, fnA)
+		emitter:removeListener(nameB, fnB)
+		return assert(coroutine.resume(thread, nameA, ...))
+	end)
+
+	fnB = emitter:onSync(nameB, function(...)
+		if predicateB and not predicateB(...) then return end
+		if timeout then
+			timer.clearTimeout(timeout)
+		end
+		emitter:removeListener(nameA, fnA)
+		emitter:removeListener(nameB, fnB)
+		return assert(coroutine.resume(thread, nameB, ...))
+	end)
+
+	timeout = timeout and timer.setTimeout(timeout, function()
+		emitter:removeListener(nameA, fnA)
+		emitter:removeListener(nameB, fnB)
+		return assert(coroutine.resume(thread, false))
+	end)
+
+	return coroutine.yield()
+end
 
 local exit = function(message)
 	message:clearReactions()
@@ -52,7 +86,7 @@ local showPage = function(message, author, menu, data, page, isFirstPage)
 
 	local description = {}
 	if page.getDescription then
-		table.insert(description, page:getDescription(menu).."\n")
+		table.insert(description, page:getDescription(menu, data).."\n")
 	elseif page.description then
 		table.insert(description, page.description.."\n")
 	end
@@ -71,8 +105,8 @@ local showPage = function(message, author, menu, data, page, isFirstPage)
 	local eventName, object1, object2
 
 	while true do
-		if page.isPrompt then
-			eventName, object1, object2 = utils.waitForAny(message.client, "messageCreate", "reactionAdd", menu.timeout, 
+		if page.onPrompt then
+			eventName, object1, object2 = waitForAny(message.client, "messageCreate", "reactionAdd", menu.timeout, 
 				function(m) return m.author.id==author.id and m.channel.id==message.channel.id end,
 				function(r, a) return r.message.id==message.id and a~=r.client.user.id end)
 		else
@@ -126,8 +160,15 @@ rm.Page = function(page)
 	if page.choices then
 		assert(type(page.choices)=="table" and #page.choices<=9, "page.choices must be a table containing at most 9 Choice objects")
 	end
-	if page.isPrompt then
-		assert(page.onPrompt, "page.onPrompt must be provided if page.isPrompt is true")
+	if page.onPrompt then
+		assert(type(page.onPrompt)=="function", "page.onPrompt must be a function if provided")
+	end
+	if page.inHistory==nil then
+		if page.onPrompt then
+			page.inHistory = false
+		else
+			page.inHistory = true
+		end
 	end
 	page.color = page.color or "00ff00"
 	assert(type(page.color)=="string" and #page.color==6, "page.color must be a 6 digit hex number")
@@ -149,13 +190,13 @@ end
 rm.paginateChoices = function(choices, title, description)
 	local pages = {
 		rm.Page{
-			title = title.." (1)",
+			title = title..(#choices>9 and " (1)" or ""),
 			description = description,
 			choices = {}
 		}
 	}
 	for num, choice in ipairs(choices) do
-		if #(pages[#pages].choices)==8 then
+		if #(pages[#pages].choices)==8 and #choices>9 then
 			table.insert(pages, rm.Page{
 				title = title.." ("..#pages+1 ..")",
 				description = description,
@@ -181,20 +222,29 @@ end
 rm.send = function(channel, author, menu, data)
 	assert(menu.type=="Menu")
 	menu.author = author
-	local message = utils.sendEmbed(channel, "Setting up...", "00ff00")
+
+	local message = channel:send{
+		embed = {
+			description = "Setting up...",
+			color = discordia.Color.fromHex("00ff00").value
+		}
+	}
 	menu.message = message
+
 	message:addReaction(rm.reactions.back)
 	message:addReaction(rm.reactions.exit)
-	for _, reaction in ipairs(rm.reactions.choices) do
-		message:addReaction(reaction)
+	for i=1, (menu.maxChoices or 9) do
+		message:addReaction(rm.reactions.choices[i])
 	end
+	timer.sleep(400) -- without this, the timing of the final reaction feels too quick
+
 	local history = {}
 	local currentPage = menu.startPage
 	local nextPage = showPage(message, author, menu, data, currentPage, true)
 	while nextPage do
 		if nextPage==true then
 			nextPage = table.remove(history) or menu.startPage
-		elseif not currentPage.isPrompt and currentPage~=nextPage then
+		elseif currentPage.inHistory and currentPage~=nextPage then
 			table.insert(history, currentPage)
 		end
 		currentPage = nextPage
