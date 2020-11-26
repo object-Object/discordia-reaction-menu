@@ -201,15 +201,10 @@ rm.paginateChoices = function(choices, title, description)
 				title = title.." ("..#pages+1 ..")",
 				description = description,
 				type = "Page",
-				choices = {
-					rm.Choice{
-						name = "Previous Page",
-						destination = pages[#pages]
-					}
-				}
+				choices = {}
 			})
 			table.insert(pages[#pages-1].choices, rm.Choice{
-				name = "Next Page",
+				name = "Next page",
 				destination = pages[#pages]
 			})
 		end
