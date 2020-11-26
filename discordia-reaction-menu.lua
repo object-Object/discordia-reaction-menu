@@ -81,7 +81,8 @@ local showPage = function(message, author, menu, data, page, isFirstPage)
 	local embed = {
 		title = page.title,
 		color = discordia.Color.fromHex(page.color).value,
-		footer = {text="User: "..author.tag}
+		footer = {text="User: "..author.tag.."  |  Menu will close:"},
+		timestamp = discordia.Date.fromSeconds(os.time()+math.floor(menu.timeout/1000)):toISO("T", "Z")
 	}
 
 	local description = {}
