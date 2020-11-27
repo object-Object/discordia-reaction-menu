@@ -121,8 +121,9 @@ local showPage = function(message, author, menu, data, page, isFirstPage)
 			timeout(message)
 			return false
 		elseif eventName=="messageCreate" then
-			object1:delete() -- delete the user's message to keep things pretty
-			return page:onPrompt(menu, data, object1)
+			local nextPage = page:onPrompt(menu, data, object1) -- run onPrompt first because runtime can vary, looks better
+			timer.setTimeout(150, coroutine.wrap(object1.delete), object1) -- wait 150 ms to delete the user's message so it gets deleted after the page update, looks better
+			return nextPage
 		elseif eventName=="reactionAdd" then
 			object1:delete(object2) -- delete their reaction
 			if object2==author.id and rm.validReactions[object1.emojiName] then
