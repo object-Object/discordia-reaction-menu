@@ -118,6 +118,7 @@ local showPage = function(message, author, menu, data, page, isFirstPage)
 		end
 
 		if not eventName then
+			menu._isClosed = true
 			timeout(message)
 			return false
 		elseif eventName=="messageCreate" then
@@ -128,6 +129,7 @@ local showPage = function(message, author, menu, data, page, isFirstPage)
 			object1:delete(object2) -- delete their reaction
 			if object2==author.id and rm.validReactions[object1.emojiName] then
 				if object1.emojiName==rm.reactions.exit then
+					menu._isClosed = true
 					exit(message)
 					return false
 				elseif object1.emojiName==rm.reactions.back and not isFirstPage then
@@ -219,6 +221,7 @@ end
 rm.send = function(channel, author, menu, data)
 	assert(menu.type=="Menu")
 	menu.author = author
+	menu._isClosed = false
 
 	local message = channel:send{
 		embed = {
@@ -228,12 +231,15 @@ rm.send = function(channel, author, menu, data)
 	}
 	menu.message = message
 
-	message:addReaction(rm.reactions.back)
-	message:addReaction(rm.reactions.exit)
-	for i=1, (menu.maxChoices or 9) do
-		message:addReaction(rm.reactions.choices[i])
-	end
-	timer.sleep(400) -- without this, the timing of the final reaction feels too quick
+	coroutine.wrap(function() -- wrap it in a coroutine so that the reactions can be added while the message is already set up, to save time
+		message:addReaction(rm.reactions.back)
+		message:addReaction(rm.reactions.exit)
+		for i=1, (menu.maxChoices or 9) do
+			if menu._isClosed then return end
+			message:addReaction(rm.reactions.choices[i])
+		end
+		timer.sleep(400) -- without this, the timing of the final reaction feels too quick
+	end)()
 
 	local history = {}
 	local currentPage = menu.startPage
