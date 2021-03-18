@@ -1,5 +1,6 @@
 local discordia = require("discordia")
 local timer = require("timer")
+discordia.extensions()
 
 local rm = {}
 
@@ -85,6 +86,14 @@ local showPage = function(message, author, menu, data, page, isFirstPage)
 		timestamp = discordia.Date.fromSeconds(os.time()+math.floor(menu.timeout/1000)):toISO("T", "Z")
 	}
 
+	if page.getTitle then
+		embed.title = page:getTitle(menu, data)
+	elseif page.title then
+		embed.title = page.title
+	end
+
+	local choices = page.getChoices and page:getChoices(menu, data) or page.choices
+
 	local description = {}
 	if page.getDescription then
 		table.insert(description, page:getDescription(menu, data).."\n")
@@ -93,10 +102,10 @@ local showPage = function(message, author, menu, data, page, isFirstPage)
 	end
 	if not isFirstPage then table.insert(description, rm.reactions.back.." Back") end
 	table.insert(description, rm.reactions.exit.." Exit")
-	if page.choices then
+	if choices then
 		table.insert(description, "")
-		for num, choice in ipairs(page.choices) do
-			table.insert(description, rm.reactions.choices[num].." "..choice.name..(choice.getValue and " ("..choice:getValue(menu, data)..")" or ""))
+		for num, choice in ipairs(choices) do
+			table.insert(description, rm.reactions.choices[num].." "..choice.name..(choice.getValue and " *("..choice:getValue(menu, data)..")*" or ""))
 		end
 	end
 	embed.description = table.concat(description, "\n")
@@ -133,11 +142,11 @@ local showPage = function(message, author, menu, data, page, isFirstPage)
 					exit(message)
 					return false
 				elseif object1.emojiName==rm.reactions.back and not isFirstPage then
-					return true
-				elseif page.choices and rm.choiceReactions[object1.emojiName] then
+					return page.onBack and page:onBack(menu, data) or true
+				elseif choices and rm.choiceReactions[object1.emojiName] then
 					local num = rm.choiceReactions[object1.emojiName]
-					if page.choices[num] then
-						return page.choices[num].onChoose and page.choices[num]:onChoose(menu, data) or page.choices[num].destination
+					if choices[num] then
+						return choices[num].onChoose and choices[num]:onChoose(menu, data) or choices[num].destination
 					end
 				end
 			end
@@ -159,7 +168,8 @@ rm.Menu = function(menu)
 end
 
 rm.Page = function(page)
-	assert(page.title, "page.title must be provided")
+	assert(not (page.choices and page.getChoices), "page.choices or page.getChoices may be provided, but not both")
+	assert(not (page.title and page.getTitle), "page.title or page.getTitle may be provided, but not both")
 	assert(not (page.description and page.getDescription), "page.description or page.getDescription may be provided, but not both")
 	if page.choices then
 		assert(type(page.choices)=="table" and #page.choices<=9, "page.choices must be a table containing at most 9 Choice objects")
@@ -191,30 +201,110 @@ rm.Choice = function(choice)
 end
 
 -- pagination functions
-rm.paginateChoices = function(choices, title, description)
-	local pages = {
-		rm.Page{
-			title = title..(#choices>9 and " (1)" or ""),
-			description = description,
-			choices = {}
-		}
+
+-- splits choices into individual pages preemptively
+-- fast to display, but editing after pagination is very difficult
+-- NOT FINISHED!!!
+-- rm.paginateChoices = function(choices, title, description)
+-- 	local pages
+-- 	local onBack = function(self, menu, data)
+-- 		-- back button should go back to the page before the first paginated page
+-- 		-- but we want them to appear in history still
+-- 		while menu.history[#menu.history]~=pages[1] do
+-- 			table.remove(menu.history)
+-- 		end
+-- 		return true
+-- 	end
+-- 	pages = {
+-- 		rm.Page{
+-- 			title = title..(#choices>9 and " (1)" or ""),
+-- 			description = description,
+-- 			choices = {},
+-- 			moves = 0 -- number of times the Next/Previous page buttons have been pressed
+-- 		}
+-- 	}
+-- 	for num, choice in ipairs(choices) do
+-- 		if #(pages[#pages].choices)==8 and #choices>9 then
+-- 			table.insert(pages, rm.Page{
+-- 				title = title.." ("..#pages+1 ..")",
+-- 				description = description,
+-- 				type = "Page",
+-- 				choices = {
+-- 					rm.Choice{
+-- 						name = "Previous page",
+-- 						onChoose = function(self, menu, data)
+-- 							pages[1].moves = pages[1].moves+1
+-- 							return pages[#pages-1]
+-- 						end
+-- 					}
+-- 				}
+-- 			})
+-- 			table.insert(pages[#pages-1].choices, rm.Choice{
+-- 				name = "Next page",
+-- 				destination = pages[#pages]
+-- 			})
+-- 		end
+-- 		table.insert(pages[#pages].choices, choice)
+-- 	end
+-- 	return pages[1]
+-- end
+
+-- displays a slice of choices that is generated on-the-fly
+-- allows editing after pagination
+rm.sliceChoices = function(choices, title, description)
+	local page
+	page = rm.Page{
+		getTitle = function(self, menu, data)
+			return title..(#choices>9 and " ("..page.slice..")" or "")
+		end,
+		description = description,
+		getChoices = function(self, menu, data)
+			local currentChoices
+			if #choices<=9 then
+				currentChoices = choices
+			else
+				local maxSlice = math.ceil(#choices/7)
+				if page.slice>maxSlice then
+					page.slice = maxSlice
+				end
+				currentChoices = {}
+				local i = 1
+				if page.slice>1 then
+					table.insert(currentChoices, rm.Choice{
+						name = "Previous page",
+						onChoose = function(self, menu, data)
+							page.slice = page.slice-1>=1 and page.slice-1 or maxSlice
+							return page
+						end
+					})
+					-- we can fit 8 choices on the first slice (no back button), and 7 on subsequent slices
+					-- also don't count choices for the current slice
+					i = 8 + 7*(page.slice-2) + 1
+				end
+				while #currentChoices<8 and choices[i] do
+					table.insert(currentChoices, choices[i])
+					i = i+1
+				end
+				if #currentChoices==8 and choices[i] then
+					table.insert(currentChoices, rm.Choice{
+						name = "Next page",
+						onChoose = function(self, menu, data)
+							page.slice = page.slice+1<=maxSlice and page.slice+1 or 1
+							return page
+						end
+					})
+				end
+			end
+			return currentChoices
+		end,
+		onBack = function(self, menu, data)
+			-- so if we later return to this page, we go to the first slice, not wherever we left off
+			self.slice = 1
+			return true
+		end,
+		slice = 1
 	}
-	for num, choice in ipairs(choices) do
-		if #(pages[#pages].choices)==8 and #choices>9 then
-			table.insert(pages, rm.Page{
-				title = title.." ("..#pages+1 ..")",
-				description = description,
-				type = "Page",
-				choices = {}
-			})
-			table.insert(pages[#pages-1].choices, rm.Choice{
-				name = "Next page",
-				destination = pages[#pages]
-			})
-		end
-		table.insert(pages[#pages].choices, choice)
-	end
-	return pages[1]
+	return page
 end
 
 -- big bad send function
@@ -241,17 +331,17 @@ rm.send = function(channel, author, menu, data)
 		timer.sleep(400) -- without this, the timing of the final reaction feels too quick
 	end)()
 
-	local history = {}
+	menu.history = {}
 	local currentPage = menu.startPage
 	local nextPage = showPage(message, author, menu, data, currentPage, true)
 	while nextPage do
 		if nextPage==true then
-			nextPage = table.remove(history) or menu.startPage
+			nextPage = table.remove(menu.history) or menu.startPage
 		elseif currentPage.inHistory and currentPage~=nextPage then
-			table.insert(history, currentPage)
+			table.insert(menu.history, currentPage)
 		end
 		currentPage = nextPage
-		nextPage = showPage(message, author, menu, data, nextPage, #history==0)
+		nextPage = showPage(message, author, menu, data, nextPage, #menu.history==0)
 	end
 end
 
